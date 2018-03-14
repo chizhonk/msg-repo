@@ -6,14 +6,15 @@
 #
 # Параметры командной строки: client.py -r -w <host> [<port>]
 
-from socket import *
-import argparse
-import time
-from jim import utils
 import logging
 import log_config
+import argparse
+from socket import socket, AF_INET, SOCK_STREAM
+from jim import utils
+from jim.config import JIMMsg, code_dict
 
 
+# Получаем ссылку на объект getLogger('msg')
 logger = logging.getLogger('msg')
 
 def log(func):
@@ -49,119 +50,116 @@ def create_parser():
 
 
 @log
-def create_presence_message():
-    """ Создает словарь/json presence-сообщения.
+def client_type(namespace):
+    """ Возвращает тип клинта (r или w) в зависимости от содержания namespace.
 
-    >>> create_presence_message()['action']
-    'presence'
-
-    :return: словарь/json presence-сообщения
+    :param namespace: параметры командной строки
+    :return: тип клиента (r - читатель, w - писатель)
     """
-    presence = {
-        'action': 'presence',
-        'time': time.time(),
-        'user': {
-            'status': 'Yep, I am here!'
-        }
-    }
-    return presence
-
-
-@log
-def srv_code_into_answer(code):
-    """ Принимает на вход числовой HTTP-код ошибки и дает его расшифровку.
-
-    >>> srv_code_into_answer(200)
-    'OK'
-
-    >>> srv_code_into_answer(400)
-    'WRONG_REQUEST'
-
-    >>> srv_code_into_answer(101)
-    Traceback (most recent call last):
-        ...
-    ValueError: Unknown error code!
-
-    :param code: ответ сервера в виде HTTP-кода ошибки
-    :return: ответ сервера в виде строки
-    """
-    code_dict = {
-        100: 'BASIC_NOTICE',
-        200: 'OK',
-        202: 'ACCEPTED',
-        400: 'WRONG_REQUEST',
-        500: 'SERVER_ERROR'
-    }
-    if code in code_dict.keys():
-        return code_dict[code]
+    if namespace.w == False:
+        return 'r'
+    elif namespace.r == False and namespace.w == True:
+        return 'w'
     else:
-        raise ValueError('Unknown error code!')
+        raise Exception('Клиент может создаваться либо на чтение, либо на запись!')
 
 
-@log
-def recv_msg_from_server(s):
-    """ Получает сообщения от сервера.
+class MsgTCPClient:
+    @log
+    def __init__(self, type, address=None):
+        self.s = socket(AF_INET, SOCK_STREAM)
+        self.type = type
+        if address: # для возможности тестирования без подключения к серверу
+            self.s.connect(address)
 
-    :param s: сокет
-    :return: None
-    """
-    data = s.recv(1024).decode('utf-8')
-    print('Message: ', data)
-    return data
+    @log
+    def create_presence_message(self):
+        """ Создает словарь/json presence-сообщения.
 
+        :return: словарь/json presence-сообщения
+        """
+        return JIMMsg('presence').msg
 
-@log
-def send_msg_to_server(s, msg):
-    """ Отправляет сообщения на сервер.
+    @log
+    def create_chat_message(self, message):
+        """ Создает словарь/json сообщения для последующей отправки в чат.
 
-    :param s: сокет
-    :param msg: отправляемое сообщение
-    :return: длина отправленного сообщения (для тестирования)
-    """
-    test_len = s.send(msg.encode('utf-8'))
-    return test_len
+        :param message: сообщение для заполнения поля message в json
+        :return: словарь/json сообщения
+        """
+        return JIMMsg('msg', message).msg
 
+    @log
+    def send_message(self, jsonmsg):
+        """ Отправляет сообщения на сервер.
 
-@log
-def chat_client():
-    """ Основная функция.
-    - создает экземпляр класса socket с заданным IP-адресом и портом для соединения с сервером
-    - формирует presence-сообщение, отправляет на сервер и получает в ответ 'OK'
-    - если читатель: в цикле получает сообщения на экран
-    - если писатель: в цикле отправляет сообщения на сервер
+        :param jsonmsg: отправляемое сообщение
+        :return: длина отправленного сообщения (для тестирования)
+        """
+        utils.send_message(self.s, jsonmsg)
+        return len(jsonmsg)
 
-    :return: None
-    """
-    # Создание сокета TCP
-    with socket(AF_INET, SOCK_STREAM) as s:
-        # Соединение с сервером
-        namespace = create_parser()
-        s.connect((namespace.addr, int(namespace.port[1:-1])))
+    @log
+    def get_message(self):
+        """ Получает сообщения от сервера.
 
-        # Формирование presence-сообщения
-        presence_message = create_presence_message()
-        # Отправка presence-сообщения серверу
-        utils.send_message(s, presence_message)
-        # Получение ответа сервера
-        srv_response = utils.get_message(s)
-        # Разбор ответа сервера
-        srv_answer = srv_code_into_answer(srv_response['response'])
-        print(srv_answer)
+        :return: словарь / json-сообщение
+        """
+        return utils.get_message(self.s)
 
-        if namespace.w == False:
+    @log
+    def resp_code_into_text(self, srv_response):
+        """ Принимает на вход словарь-response с числовым HTTP-кодом ошибки и дает его расшифровку.
+
+        :param srv_response: ответ сервера в виде HTTP-кода ошибки
+        :return: ответ сервера в виде строки
+        """
+        if srv_response['response'] in code_dict.keys():
+            return code_dict[srv_response['response']]
+        else:
+            raise ValueError('Неизвестный код ошибки!')
+
+    @log
+    def chat_client(self):
+        """ Основная функция.
+        - формирует presence-сообщение, отправляет на сервер и получает в ответ 'OK'
+        - если читатель: в цикле получает сообщения на экран
+        - если писатель: в цикле отправляет сообщения в чат
+
+        :return: None
+        """
+        self.send_message(self.create_presence_message())
+        response = self.get_message()
+        print(self.resp_code_into_text(response))
+
+        if self.type == 'r':
             while True:
-                recv_msg_from_server(s)
-        elif namespace.r == False and namespace.w == True:
+                response = self.get_message()
+                print(response['message'])
+        else:
             while True:
                 msg = input('Ваше сообщение: ')
                 if msg == 'exit':
                     break
                 else:
-                    send_msg_to_server(s, msg)
-
-        else:
-            print('Вы можете указать либо чтение, либо запись!')
+                    self.send_message(self.create_chat_message(msg))
 
 
 if __name__ == '__main__':
-    chat_client()
+    # Создаем парсер, вычитываем аргументы командной строки, формируем адрес и тип клиента
+    namespace = create_parser()
+    address = (namespace.addr, int(namespace.port[1:-1]))
+    type = client_type(namespace)
+
+    # Создаем клиента и присоединяем его к чату
+    clnt = MsgTCPClient(type, address)
+    clnt.chat_client()
+
+
+
+
+
+
+
+
+

@@ -1,5 +1,4 @@
 # Для корректной работы данного файла в командной строке аргументы не передаются.
-# Перед запуском данного файла необходимо задокументировать в server.py блок кода while True.
 
 from server import create_response_200, create_response_400, create_answer
 import unittest

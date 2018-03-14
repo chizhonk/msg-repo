@@ -5,13 +5,13 @@
 #
 # Параметры командной строки для запуска: server.py -p <port> -a <host>
 
-import select
-from socket import socket, AF_INET, SOCK_STREAM
-import argparse
-import time
-from jim import utils
 import logging
 import log_config
+import argparse
+from socket import socket, AF_INET, SOCK_STREAM
+import select
+from jim.config import JIMResponse, JIMMsg
+import json
 
 
 # Получаем ссылку на объект getLogger('server')
@@ -46,166 +46,115 @@ def create_parser():
     return parser
 
 
-@log
-def create_response_200():
-    """ Создает словарь/json ответа сервера с HTTP-кодом ошибки 200.
+class MsgTCPServer():
+    @log
+    def __init__(self, address):
+        self.s = socket(AF_INET, SOCK_STREAM)
+        self.s.bind(address)
+        self.s.listen(5)
+        self.s.settimeout(0.2)
+        self.clients = [] # список клиентов, подключенных к чату
 
-    >>> create_response_200()['response']
-    200
+    def read_requests(self, r_clients):
+        """ Читает запросы клиентов-писателей на запись в чат и возвращает словарь {сокет: запрос}.
+        Удаляет из списка клиентов отключившегося клиента
+        (при отключении клиента он по умолчанию попадает в список писателей и пытается писать в чат '').
 
-    :return: словарь/json ответа с кодом 200
-    """
-    response_200 = {
-        'response': 200,
-        'time': time.time()
-    }
-    return response_200
+        :param r_clients: список клиентов-писателей
+        :return: словарь {сокет: данные}
+        """
+        responses = {}
 
-
-@log
-def create_response_400():
-    """ Создает словарь/json ответа сервера с HTTP-кодом ошибки 400.
-
-    >>> create_response_400()['response']
-    400
-
-    :return: словарь/json ответа с кодом 400
-    """
-    response_400 = {
-        'response': 400,
-        'time': time.time(),
-        'error': 'Wrong request / JSON object!'
-    }
-    return response_400
-
-
-@log
-def create_answer(received_msg):
-    """ В ответ на presence-сообщение клиента формирует ответ с HTTP-кодом ошибки 200 (OK).
-    В ответ на любое другое сообщение клиента формирует ответ с HTTP-кодом ошибки 400 (WRONG_REQUEST).
-
-    >>> create_answer({'action': 'presence'})['response']
-    200
-
-    >>> create_answer({'action': 'whatever'})['response']
-    400
-
-    :param received_msg: словрь/json сообщения клиента
-    :return: ответ сервера с HTTP-кодом ошибки
-    """
-    if received_msg['action'] == 'presence':
-        return create_response_200()
-    else:
-        return create_response_400()
-
-
-@log
-def new_listen_socket(address):
-    """ Создает новый экземпляр класса socket с IP-адресом и портом, переданными в качестве аргумента.
-    Устанавливается таймаут для операций с сокетом.
-
-    :param address: IP-адрес и порт
-    :return: сокет
-    """
-    sock = socket(AF_INET, SOCK_STREAM)
-    sock.bind(address)
-    sock.listen(5)
-    sock.settimeout(0.2)
-    return sock
-
-
-def read_requests(r_clients, all_clients):
-    """ Читает запросы клиентов-писателей на запись в чат и возвращает словарь {сокет: запрос}.
-    Удаляет из списка клиентов отключившегося клиента
-    (при отключении клиента он по умолчанию попадает в список писателей и пытается писать в чат '').
-
-    :param r_clients: список клиентов-писателей
-    :param all_clients: список всех клиентов
-    :return: словарь {сокет: данные}
-    """
-    responses = {}
-
-    for sock in r_clients:
-        try:
-            data = sock.recv(1024).decode('utf-8')
-            responses[sock] = data
-            if data == '':
-                all_clients.remove(sock)
-        except:
-            print('Клиент {} {} отключился'.format(sock.fileno(), sock.getpeername()))
-            all_clients.remove(sock)
-
-    return responses
-
-
-def write_responses(requests, w_clients, all_clients):
-    """ Отправляет клиентам-читателям запросы клиентов писателей.
-    Удаляет клиента из списка всех клиентов при отключении.
-
-    :param requests: словарь с запросами клиентов-писателей
-    :param w_clients: список клиентов-читателей
-    :param all_clients: список всех клиентов
-    :return: суммарная длина отправленных сообщений (нужно только для тестирования)
-    """
-    test_len = 0
-    for w_sock in w_clients:
-        for sock in requests:
-            if sock != w_sock:
-                try:
-                    resp = requests[sock].encode('utf-8')
-                    test_len += w_sock.send(resp)
-                except:
-                    print('Клиент {} {} отключился'.format(w_sock.fileno(), w_sock.getpeername()))
-                    w_sock.close()
-                    all_clients.remove(w_sock)
-    return test_len
-
-
-@log
-def mainloop():
-    """ Основная функция:
-    - создает экземпляр класса socket с заданным IP-адресом и портом
-    - в цикле:
-        - если новый клиент подключился, добавляет его в список клиентов, принимает presence-сообщение и отвечает 'OK'
-        - делит всех клиентов на писателей и читателей
-        - сохраняет запросы клиентов-писателей с помощью функции read_requests
-        - отправляет сообщения клиентам-читателям с помощью функции write_responses
-
-    :return: None
-    """
-    clients = []
-
-    parser = create_parser()
-    namespace = parser.parse_args()
-    address = (namespace.a, int(namespace.p))
-    s = new_listen_socket(address)
-
-    while True:
-        try:
-            conn, addr = s.accept()  # Проверка подключений
-        except OSError as e:
-            pass  # timeout вышел
-        else:
-            print("Получен запрос на соединение с %s" % str(addr))
-            clients.append(conn)
-            # Принятие presence-сообщения клиента
-            received_msg = utils.get_message(conn)
-            # Формирование ответа клиенту
-            answer = create_answer(received_msg)
-            # Отправка ответа клиенту
-            utils.send_message(conn, answer)
-        finally:
-            wait = 0
-            r = []
-            w = []
+        for sock in r_clients:
             try:
-                r, w, e = select.select(clients, clients, [], wait)
-            except Exception as e:
-                pass
+                data = json.loads(sock.recv(1024).decode('utf-8'))
+                if data == '':
+                    print('yes!!!')
+                    self.clients.remove(sock)
+                elif data['action'] == 'msg':
+                    responses[sock] = data
+                else:
+                    raise Exception('Сообщение должно иметь action MSG!')
+            except:
+                print('Клиент {} {} отключился'.format(sock.fileno(), sock.getpeername()))
+                self.clients.remove(sock)
 
-            requests = read_requests(r, clients)  # Сохраним запросы клиентов на отправку сообщений
-            write_responses(requests, w, clients)  # Выполним отправку сообщений клиентам
+        return responses
+
+    def write_responses(self, requests, w_clients):
+        """ Отправляет клиентам-читателям запросы клиентов-писателей.
+        Удаляет клиента из списка всех клиентов при отключении.
+
+        :param requests: словарь с запросами клиентов-писателей
+        :param w_clients: список клиентов-читателей
+        :return: суммарная длина отправленных сообщений (нужно только для тестирования)
+        """
+        test_len = 0
+        for w_sock in w_clients:
+            for sock in requests:
+                if sock != w_sock:
+                    try:
+                        if requests[sock]['action'] == 'msg':
+                            resp = JIMMsg('msg', requests[sock]['message']).msg
+                            test_len += len(resp)
+                            w_sock.send(json.dumps(resp).encode('utf-8'))
+                        else:
+                            raise Exception('Сообщение должно иметь action MSG!')
+                    except:
+                        print('Клиент {} {} отключился'.format(w_sock.fileno(), w_sock.getpeername()))
+                        w_sock.close()
+                        self.clients.remove(w_sock)
+        return test_len
+
+    @log
+    def mainloop(self):
+        """ Основная функция:
+        - в цикле:
+            - если новый клиент подключился, добавляет его в список клиентов, принимает presence-сообщение и отвечает 'OK'
+            - делит всех клиентов на писателей и читателей
+            - сохраняет запросы клиентов-писателей с помощью функции read_requests
+            - отправляет сообщения клиентам-читателям с помощью функции write_responses
+
+        :return: None
+        """
+        while True:
+            try:
+                conn, addr = self.s.accept()  # Проверка подключений
+            except OSError as e:
+                pass  # timeout вышел
+            else:
+                print("Получен запрос на соединение с %s" % str(addr))
+                self.clients.append(conn)
+                # Принятие presence-сообщения клиента
+                received_msg = json.loads(conn.recv(1024).decode('utf-8'))
+                # Формирование ответа клиенту
+                if received_msg['action'] == 'presence':
+                    response = JIMResponse(200).resp
+                    # Отправка ответа клиенту
+                    conn.send(json.dumps(response).encode('utf-8'))
+                else:
+                    raise Exception('Первым сообщением должен быть presence!')
+            finally:
+                wait = 0
+                r = []
+                w = []
+                try:
+                    r, w, e = select.select(self.clients, self.clients, [], wait)
+                except Exception as e:
+                   pass
+
+                requests = self.read_requests(r)  # Сохраним запросы клиентов на отправку сообщений
+                self.write_responses(requests, w)  # Выполним отправку сообщений клиентам
 
 
 if __name__ == '__main__':
-    mainloop()
+    # Создаем парсер, вычитываем аргументы командной строки и формируем адрес
+    parser = create_parser()
+    namespace = parser.parse_args()
+    address = (namespace.a, int(namespace.p))
+
+    # Создаем сервер и запускаем его основной цикл
+    serv = MsgTCPServer(address)
+    serv.mainloop()
+
+
