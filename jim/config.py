@@ -11,25 +11,28 @@ code_dict = {
 
 
 class JIMMsg:
-    def __init__(self, action, message=None):
+    def __init__(self, action, login=None, message=None):
         self.msg = {'action': '',
                     'time': '',
+                    'user': {'account_name': ''},
                     'message': ''}
-        if action in ['presence', 'msg']:
+        if action in ['presence', 'msg', 'authenticate', 'get_contacts', 'contact_list', 'add_contact', 'del_contact']:
             self.msg['action'] = action
         else:
             raise Exception('Недопустимое значение поля action!')
         self.msg['time'] = time.time()
+        self.msg['user']['account_name'] = login
         self.msg['message'] = message
 
 
 class JIMResponse:
-    def __init__(self, response_code):
+    def __init__(self, response_code, quantity=None):
         self.resp = {'response': '',
                      'time': '',
-                     'error': ''}
+                     'error': '',
+                     'quantity': ''}
         if type(response_code) is int:
-            if response_code in [200, 400]:
+            if response_code in [200, 202, 400, 500]:
                 self.resp['response'] = response_code
             else:
                 raise Exception('Недопустимое значение поля response_code!')
@@ -38,6 +41,8 @@ class JIMResponse:
         self.resp['time'] = time.time()
         if response_code == 400:
             self.resp['error'] = 'Недопустимый запрос / JSON-объект!'
+        if response_code == 202:
+            self.resp['quantity'] = quantity
 
 
 """Константы для jim протокола, настройки"""

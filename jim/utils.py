@@ -46,7 +46,7 @@ def bytes_to_dict(message_bytes):
         raise TypeError
 
 
-def send_message(sock, message):
+def send_message(sock, message, group=None):
     """
     Отправка сообщения
     :param sock: сокет
@@ -54,9 +54,11 @@ def send_message(sock, message):
     :return: None
     """
     # Словарь переводим в байты
-    bprescence = dict_to_bytes(message)
+    if group:
+        message['group'] = group
+    bmessage = dict_to_bytes(message)
     # Отправляем
-    sock.send(bprescence)
+    sock.send(bmessage)
 
 
 def get_message(sock):

@@ -5,6 +5,9 @@
 #
 # Параметры командной строки для запуска: server.py -p <port> -a <host>
 
+from os import path
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 import logging
 import log_config
 import argparse
@@ -12,7 +15,8 @@ from socket import socket, AF_INET, SOCK_STREAM
 import select
 from jim.config import JIMResponse, JIMMsg
 import json
-
+from repo.server_models import Client, ClientContact, Base
+from repo.server_repo import Repo
 
 # Получаем ссылку на объект getLogger('server')
 logger = logging.getLogger('server')
@@ -53,7 +57,29 @@ class MsgTCPServer():
         self.s.bind(address)
         self.s.listen(5)
         self.s.settimeout(0.2)
-        self.clients = [] # список клиентов, подключенных к чату
+        self.clients = {} # словарь сокет-username клиентов, подключенных к чату
+        self.dwh = None # объект хранилища (инициализируется в процессе работы метода create_db_session)
+
+    def create_db_session(self):
+        """ Создает сессию подключения к базе данных
+
+        :return:
+        """
+        # Путь до папки где лежит этот модуль
+        SERVER_PATH = path.dirname(path.abspath(__file__))
+        # Путь до файла базы данных
+        DB_PATH = path.join(SERVER_PATH, 'repo/server.db')
+        # Создаем движок
+        engine = create_engine('sqlite:///{}'.format(DB_PATH), echo=False)
+        # Создаем структуру базы данных
+        Base.metadata.create_all(engine)
+        # Создаем сессию для работы
+        Session = sessionmaker(bind=engine)
+        session = Session()
+
+        self.dwh = Repo(session)
+
+        return session
 
     def read_requests(self, r_clients):
         """ Читает запросы клиентов-писателей на запись в чат и возвращает словарь {сокет: запрос}.
@@ -69,15 +95,14 @@ class MsgTCPServer():
             try:
                 data = json.loads(sock.recv(1024).decode('utf-8'))
                 if data == '':
-                    print('yes!!!')
-                    self.clients.remove(sock)
-                elif data['action'] == 'msg':
+                    self.clients.pop(sock)
+                elif data['action'] == 'msg' or data['action'] == 'add_contact':
                     responses[sock] = data
                 else:
-                    raise Exception('Сообщение должно иметь action MSG!')
+                    raise Exception('Сообщение должно иметь action "msg" или "add_contact"!')
             except:
                 print('Клиент {} {} отключился'.format(sock.fileno(), sock.getpeername()))
-                self.clients.remove(sock)
+                self.clients.pop(sock)
 
         return responses
 
@@ -90,20 +115,29 @@ class MsgTCPServer():
         :return: суммарная длина отправленных сообщений (нужно только для тестирования)
         """
         test_len = 0
-        for w_sock in w_clients:
-            for sock in requests:
-                if sock != w_sock:
-                    try:
-                        if requests[sock]['action'] == 'msg':
-                            resp = JIMMsg('msg', requests[sock]['message']).msg
+        for sock in requests:
+            if requests[sock]['action'] == 'add_contact':
+                add_status = self.dwh.add_contact(self.clients[sock], requests[sock]['user']['account_name'])
+                if add_status == 0:
+                    resp = JIMResponse(response_code=200).resp
+                    # print('Добавляем контакт', requests[sock]['user']['account_name'], ' клиенту ', self.clients[sock])
+                    sock.send(json.dumps(resp).encode('utf-8'))
+                else:
+                    resp = JIMResponse(response_code=500).resp
+                    sock.send(json.dumps(resp).encode('utf-8'))
+            elif requests[sock]['action'] == 'msg':
+                for w_sock in w_clients:
+                    if sock != w_sock:
+                        try:
+                            resp = JIMMsg(action='msg', message=requests[sock]['message']).msg
                             test_len += len(resp)
                             w_sock.send(json.dumps(resp).encode('utf-8'))
-                        else:
-                            raise Exception('Сообщение должно иметь action MSG!')
-                    except:
-                        print('Клиент {} {} отключился'.format(w_sock.fileno(), w_sock.getpeername()))
-                        w_sock.close()
-                        self.clients.remove(w_sock)
+                        except:
+                            print('Клиент {} {} отключился'.format(w_sock.fileno(), w_sock.getpeername()))
+                            w_sock.close()
+                            self.clients.pop(w_sock)
+            else:
+                raise Exception('Сообщение должно иметь action "msg" или "add_contact"!')
         return test_len
 
     @log
@@ -117,6 +151,9 @@ class MsgTCPServer():
 
         :return: None
         """
+
+        self.create_db_session() # создание сессии для работы с БД
+
         while True:
             try:
                 conn, addr = self.s.accept()  # Проверка подключений
@@ -124,14 +161,33 @@ class MsgTCPServer():
                 pass  # timeout вышел
             else:
                 print("Получен запрос на соединение с %s" % str(addr))
-                self.clients.append(conn)
+                # self.clients.append(conn)
+                self.clients[conn] = ''
                 # Принятие presence-сообщения клиента
                 received_msg = json.loads(conn.recv(1024).decode('utf-8'))
                 # Формирование ответа клиенту
                 if received_msg['action'] == 'presence':
+                    username = received_msg['user']['account_name']
+                    self.clients[conn] = username
+                    if not self.dwh.client_exists(username):
+                        self.dwh.add_client(username)
+                        print('Клиент добавлен в базу: ', self.dwh.get_client_by_username(username))
+                    else:
+                        print('Клиент уже есть в базе: ', self.dwh.get_client_by_username(username))
+                    self.dwh.add_logon(username, addr[0])
+                    # self.dwh.get_logon_history(username)
                     response = JIMResponse(200).resp
                     # Отправка ответа клиенту
                     conn.send(json.dumps(response).encode('utf-8'))
+
+                    received_msg_get_contacts = json.loads(conn.recv(1024).decode('utf-8'))
+                    if received_msg_get_contacts['action'] == 'get_contacts':
+                        contacts = self.dwh.get_contacts(username)
+                        accept = JIMResponse(response_code=202, quantity=len(contacts)).resp
+                        conn.send(json.dumps(accept).encode('utf-8'))
+                        # for i in range(accept['quantity']):
+                        #    contact = JIMMsg(action='contact_list', login=contacts[i].Name).msg
+                        #    conn.send(json.dumps(contact).encode('utf-8'))
                 else:
                     raise Exception('Первым сообщением должен быть presence!')
             finally:
@@ -139,7 +195,7 @@ class MsgTCPServer():
                 r = []
                 w = []
                 try:
-                    r, w, e = select.select(self.clients, self.clients, [], wait)
+                    r, w, e = select.select(self.clients.keys(), self.clients.keys(), [], wait)
                 except Exception as e:
                    pass
 
@@ -152,6 +208,7 @@ if __name__ == '__main__':
     parser = create_parser()
     namespace = parser.parse_args()
     address = (namespace.a, int(namespace.p))
+    print(address)
 
     # Создаем сервер и запускаем его основной цикл
     serv = MsgTCPServer(address)

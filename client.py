@@ -64,6 +64,40 @@ def client_type(namespace):
         raise Exception('Клиент может создаваться либо на чтение, либо на запись!')
 
 
+class ContactList:
+    def __init__(self, client):
+        self.client = client
+
+    def get_client_contacts(self):
+        get_contacts_msg = JIMMsg(action='get_contacts').msg
+        utils.send_message(self.client.s, get_contacts_msg)
+        accept = utils.get_message(self.client.s)
+        # if accept['quantity']:
+        #    print('Ваши контакты: ')
+        #    for i in range(accept['quantity']):
+        #        print(utils.get_message(self.client.s)['user']['account_name'])
+        return accept['quantity']
+
+    def add_contact(self, contact_username):
+        add_contact_msg = JIMMsg(action='add_contact', login=contact_username).msg
+        # print(add_contact_msg)
+        utils.send_message(self.client.s, add_contact_msg)
+        resp = utils.get_message(self.client.s)
+        return resp
+
+    def del_contact(self, contact_username):
+        del_contact_msg = JIMMsg(action='del_contact', login=contact_username).msg
+        utils.send_message(self.client.s, del_contact_msg)
+        resp = utils.get_message(self.client.s)
+        return resp
+
+
+class User:
+    def __init__(self, username, password=None):
+        self.username = username
+        self.password = password
+
+
 class MsgTCPClient:
     @log
     def __init__(self, type, address=None):
@@ -71,6 +105,8 @@ class MsgTCPClient:
         self.type = type
         if address: # для возможности тестирования без подключения к серверу
             self.s.connect(address)
+        # self.login = ''
+        self.user = User(None)
 
     @log
     def create_presence_message(self):
@@ -78,7 +114,7 @@ class MsgTCPClient:
 
         :return: словарь/json presence-сообщения
         """
-        return JIMMsg('presence').msg
+        return JIMMsg(action='presence', login=self.user.username).msg
 
     @log
     def create_chat_message(self, message):
@@ -87,16 +123,16 @@ class MsgTCPClient:
         :param message: сообщение для заполнения поля message в json
         :return: словарь/json сообщения
         """
-        return JIMMsg('msg', message).msg
+        return JIMMsg(action='msg', message=message).msg
 
     @log
-    def send_message(self, jsonmsg):
+    def send_message(self, jsonmsg, group=None):
         """ Отправляет сообщения на сервер.
 
         :param jsonmsg: отправляемое сообщение
         :return: длина отправленного сообщения (для тестирования)
         """
-        utils.send_message(self.s, jsonmsg)
+        utils.send_message(self.s, jsonmsg, group)
         return len(jsonmsg)
 
     @log
@@ -128,21 +164,42 @@ class MsgTCPClient:
 
         :return: None
         """
+        login = input('Ваш логин (латиницей): ')
+        self.user = User(username=login)
+
         self.send_message(self.create_presence_message())
         response = self.get_message()
         print(self.resp_code_into_text(response))
+
+        contact_list = ContactList(self)
+        contact_list.get_client_contacts()
 
         if self.type == 'r':
             while True:
                 response = self.get_message()
                 print(response['message'])
         else:
+            print('Возможные действия:')
+            print('- "add"  - добавить контакт')
+            print('- "msg"  - ввести сообщение')
+            print('- "exit" - выйти из программы')
             while True:
-                msg = input('Ваше сообщение: ')
-                if msg == 'exit':
+                action = input('Выберите действие: ')
+                if action == 'add':
+                    login = input('Введите логин добавляемого контакта: ')
+                    contact_list.add_contact(login)
+                    pass
+                elif action == 'msg':
+                    msg = input('Ваше сообщение: ')
+                    if msg == 'exit':
+                        break
+                    else:
+                        self.send_message(self.create_chat_message(msg))
+                elif action == 'exit':
+                    print('Выход из программы!')
                     break
                 else:
-                    self.send_message(self.create_chat_message(msg))
+                    print('Выбрано неизвестное действие. Попробуйте еще раз!')
 
 
 if __name__ == '__main__':
