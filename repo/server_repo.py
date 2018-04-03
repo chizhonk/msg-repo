@@ -35,17 +35,20 @@ class Repo:
         if contact:
             client = self.get_client_by_username(client_username)
             if client:
-                cc = ClientContact(client_id=client.ClientId, contact_id=contact.ClientId)
-                self.session.add(cc)
-                self.session.commit()
-                return 0
+                is_exists = self.session.query(ClientContact).filter(
+                    ClientContact.ClientId == client.ClientId).filter(
+                    ClientContact.ContactId == contact.ClientId).first()
+                if not is_exists:
+                    cc = ClientContact(client_id=client.ClientId, contact_id=contact.ClientId)
+                    self.session.add(cc)
+                    self.session.commit()
+                else:
+                    print('Contact', contact_username, 'already exists in client contact list')
+                    raise Exception('Такой контакт уже есть у клиента!')
             else:
-                # raise NoneClientError(client_username)
-                return 1
+                raise ContactDoesNotExist(client_username)
         else:
-            print('Контакт', contact_username, 'не существует и не будет добавлен пользователю', client_username)
-            return 2
-            # raise ContactDoesNotExist(contact_username)
+            raise ContactDoesNotExist(contact_username)
 
     def del_contact(self, client_username, contact_username):
         """Удаление контакта"""
@@ -57,10 +60,12 @@ class Repo:
                     ClientContact.ClientId == client.ClientId).filter(
                     ClientContact.ContactId == contact.ClientId).first()
                 self.session.delete(cc)
+                self.session.commit()
             else:
-                # raise NoneClientError(client_username)
-                pass
+                print(client_username, 'doesn not exist')
+                raise ContactDoesNotExist(client_username)
         else:
+            print(contact_username, 'does not exist')
             raise ContactDoesNotExist(contact_username)
 
     def get_contacts(self, client_username):

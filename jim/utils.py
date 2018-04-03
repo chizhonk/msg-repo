@@ -33,6 +33,7 @@ def bytes_to_dict(message_bytes):
         # Декодируем
         jmessage = message_bytes.decode(ENCODING)
         # Из json делаем словарь
+        #print('json:' + jmessage + '**')
         message = json.loads(jmessage)
         # Если там был словарь
         if isinstance(message, dict):
@@ -70,6 +71,9 @@ def get_message(sock):
     # Получаем байты
     bresponse = sock.recv(1024)
     # переводим байты в словарь
-    response = bytes_to_dict(bresponse)
-    # возвращаем словарь
-    return response
+    try:
+        response = bytes_to_dict(bresponse)
+        return response
+    except json.decoder.JSONDecodeError:
+        print('Пришло пустое сообщение!')
+        return bresponse

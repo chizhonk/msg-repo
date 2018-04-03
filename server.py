@@ -17,6 +17,8 @@ from jim.config import JIMResponse, JIMMsg
 import json
 from repo.server_models import Client, ClientContact, Base
 from repo.server_repo import Repo
+from repo.server_errors import ContactDoesNotExist
+import time
 
 # Получаем ссылку на объект getLogger('server')
 logger = logging.getLogger('server')
@@ -94,9 +96,10 @@ class MsgTCPServer():
         for sock in r_clients:
             try:
                 data = json.loads(sock.recv(1024).decode('utf-8'))
+                #print(data)
                 if data == '':
                     self.clients.pop(sock)
-                elif data['action'] == 'msg' or data['action'] == 'add_contact':
+                elif data['action'] == 'msg' or data['action'] == 'add_contact' or data['action'] == 'del_contact':
                     responses[sock] = data
                 else:
                     raise Exception('Сообщение должно иметь action "msg" или "add_contact"!')
@@ -117,12 +120,21 @@ class MsgTCPServer():
         test_len = 0
         for sock in requests:
             if requests[sock]['action'] == 'add_contact':
-                add_status = self.dwh.add_contact(self.clients[sock], requests[sock]['user']['account_name'])
-                if add_status == 0:
+                try:
+                    self.dwh.add_contact(self.clients[sock], requests[sock]['user']['account_name'])
                     resp = JIMResponse(response_code=200).resp
-                    # print('Добавляем контакт', requests[sock]['user']['account_name'], ' клиенту ', self.clients[sock])
+                    print(requests[sock]['user']['account_name'], 'added as a contact to contact list of', self.clients[sock])
                     sock.send(json.dumps(resp).encode('utf-8'))
-                else:
+                except Exception as e:
+                    resp = JIMResponse(response_code=500).resp
+                    sock.send(json.dumps(resp).encode('utf-8'))
+            elif requests[sock]['action'] == 'del_contact':
+                try:
+                    self.dwh.del_contact(self.clients[sock], requests[sock]['user']['account_name'])
+                    resp = JIMResponse(response_code=200).resp
+                    print(requests[sock]['user']['account_name'], 'deleted from contact list of', self.clients[sock])
+                    sock.send(json.dumps(resp).encode('utf-8'))
+                except Exception as e:
                     resp = JIMResponse(response_code=500).resp
                     sock.send(json.dumps(resp).encode('utf-8'))
             elif requests[sock]['action'] == 'msg':
@@ -131,6 +143,7 @@ class MsgTCPServer():
                         try:
                             resp = JIMMsg(action='msg', message=requests[sock]['message']).msg
                             test_len += len(resp)
+                            #print(resp)
                             w_sock.send(json.dumps(resp).encode('utf-8'))
                         except:
                             print('Клиент {} {} отключился'.format(w_sock.fileno(), w_sock.getpeername()))
@@ -185,7 +198,13 @@ class MsgTCPServer():
                         contacts = self.dwh.get_contacts(username)
                         accept = JIMResponse(response_code=202, quantity=len(contacts)).resp
                         conn.send(json.dumps(accept).encode('utf-8'))
-                        # for i in range(accept['quantity']):
+
+                        time.sleep(0.1)
+                        contact_names = []
+                        for i in range(accept['quantity']):
+                            contact_names.append(contacts[i].Name)
+                        contacts_msg = JIMMsg(action='contact_list', message=contact_names).msg
+                        conn.send((json.dumps(contacts_msg).encode('utf-8')))
                         #    contact = JIMMsg(action='contact_list', login=contacts[i].Name).msg
                         #    conn.send(json.dumps(contact).encode('utf-8'))
                 else:
@@ -196,6 +215,7 @@ class MsgTCPServer():
                 w = []
                 try:
                     r, w, e = select.select(self.clients.keys(), self.clients.keys(), [], wait)
+                    #print(r, w)
                 except Exception as e:
                    pass
 
@@ -208,7 +228,6 @@ if __name__ == '__main__':
     parser = create_parser()
     namespace = parser.parse_args()
     address = (namespace.a, int(namespace.p))
-    print(address)
 
     # Создаем сервер и запускаем его основной цикл
     serv = MsgTCPServer(address)
